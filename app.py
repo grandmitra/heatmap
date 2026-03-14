@@ -4,135 +4,136 @@ import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
 
-# --- 1. CONFIG & DATA LOAD ---
-st.set_page_config(page_title="Konoha Ops - Heatmap & Picker", layout="wide")
+# --- 1. CONFIGURATION ---
+st.set_page_config(page_title="Konoha Ops - Enterprise", layout="wide")
 
-SHEET_ID = '1Ov3nggLzpDQPkMyfoJtT8i4Goe1MLJ2t6AFRFspi_X8'
+SHEET_ID_MASTER = '1Ov3nggLzpDQPkMyfoJtT8i4Goe1MLJ2t6AFRFspi_X8'
+SHEET_ID_SO = '1mjjDF1ETjOB_eTI6ChI6dqvg0wf9aCa7cJwx0x2K3No'
 
-def fix_google_url(url):
-    if pd.isna(url) or str(url).strip() == "": return None
+# --- 2. DATA ENGINE ---
+@st.cache_data(ttl=30) # Cache singkat untuk monitoring live
+def load_all_sync():
     try:
-        if "googleusercontent.com" in str(url): return url
-        file_id = url.split('d/')[1].split('/')[0] if 'd/' in url else url.split('/')[-1]
-        return f"https://lh3.googleusercontent.com/d/1mtODhk7uOT_x1_rf53PIBtTT94r53I60{file_id}"
-    except: return None
+        # Load Master
+        df_master = pd.read_csv(f'https://docs.google.com/spreadsheets/d/{SHEET_ID_MASTER}/gviz/tq?tqx=out:csv&sheet=Master_Lokasi')
+        df_peta = pd.read_csv(f'https://docs.google.com/spreadsheets/d/{SHEET_ID_MASTER}/gviz/tq?tqx=out:csv&sheet=Peta_Lantai')
+        df_data = pd.read_csv(f'https://docs.google.com/spreadsheets/d/{SHEET_ID_MASTER}/gviz/tq?tqx=out:csv&sheet=Data')
+        
+        # Load Stok Opname (Ralat: Sheet stat_lok)
+        df_so = pd.read_csv(f'https://docs.google.com/spreadsheets/d/{SHEET_ID_SO}/gviz/tq?tqx=out:csv&sheet=stat_lok')
 
-@st.cache_data(ttl=300)
-def load_and_sync():
-    try:
-        df_data = pd.read_csv(f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Data')
-        df_master = pd.read_csv(f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Master_Lokasi')
-        df_peta = pd.read_csv(f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Peta_Lantai')
-
-        # Bersihkan data koordinat
+        # Cleaning Master
         df_master['X'] = pd.to_numeric(df_master['X'], errors='coerce')
         df_master['Y'] = pd.to_numeric(df_master['Y'], errors='coerce')
+        df_master = df_master.dropna(subset=['X', 'Y'])
         
-        # --- LOGIKA ANALYTICS PER RAK ---
-        # Beri bobot: FAST=1, SLOW=-1 untuk rata-rata status
+        # Speed Score for Heatmap
         df_data['Weight'] = df_data['Kategori'].apply(lambda x: 1 if x == 'FASTSLOW' else -1)
-        
         rak_resume = df_data.groupby('Kode_Lokasi').agg(
             Total_Barang=('Nama_Barang', 'count'),
-            Speed_Score=('Weight', 'mean'), # Nilai antara -1 sampai 1
-            List_Barang=('Nama_Barang', lambda x: '<br>'.join(list(x)[:5])) # Ambil 5 contoh
+            Speed_Score=('Weight', 'mean'),
+            List_Barang=('Nama_Barang', lambda x: '<br>'.join(list(x)[:5]))
         ).reset_index()
 
-        merged = pd.merge(rak_resume, df_master, left_on='Kode_Lokasi', right_on='Lokasi', how='right')
+        merged = pd.merge(df_master, rak_resume, left_on='Lokasi', right_on='Kode_Lokasi', how='left')
         merged['Y_Visual'] = 1000 - merged['Y']
-        merged['Status'] = merged['Speed_Score'].apply(lambda x: '🔥 Fast' if x > 0 else ('❄️ Slow' if x < 0 else '⚖️ Balanced'))
         
-        return merged, df_peta, df_data
+        return merged, df_peta, df_so
     except Exception as e:
-        st.error(f"Error Sync: {e}")
+        st.error(f"Gagal Load Data: {e}")
         return None, None, None
 
-df_rak, df_peta, df_raw = load_and_sync()
+df_main, df_peta, df_so = load_all_sync()
 
-# --- 2. SIDEBAR ---
-st.sidebar.image("https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEjOSYdAHgNypARS4Hgo0dIYjUDv9dqrEKxp20CPHJ2WE_VMJ2mNu9gEdMUbrZl6OX8dKk8rw-6J1jl4qBtggKHCpRcz6oTlXFdQbCGG3JmeoRYNDRV32VcGj4xUlFbPTuQ1NwnvQ7lK6jY/s1600/Sharingan.gif", width=80)
-st.sidebar.title("Konoha Analytics")
-
+# --- 3. SIDEBAR ---
+st.sidebar.title("Konoha Systems")
+menu = st.sidebar.radio("Navigation", ["📦 Live Stok Opname", "🔥 Warehouse Heatmap", "🎯 Coordinate Picker"])
 sel_lantai = st.sidebar.selectbox("Pilih Lantai", ["Lantai 1", "Lantai 2", "Lantai 3"])
-mode = st.sidebar.radio("Mode Visual", ["Heatmap Resume", "Detail Barang", "Coordinate Picker"])
 
-# Filter Data Berdasarkan Lantai
-floor_df = df_rak[df_rak['Lantai'] == sel_lantai].copy()
+if df_main is not None:
+    floor_df = df_main[df_main['Lantai'] == sel_lantai].copy()
+    map_row = df_peta[df_peta['Lantai'] == sel_lantai]
+    bg_map = f"https://lh3.googleusercontent.com/d/{map_row['URL'].values[0]}" if not map_row.empty else ""
 
-# --- 3. MAIN INTERFACE ---
-st.header(f"📊 {mode} - {sel_lantai}")
+    # --- 4. MODULE: STOK OPNAME ---
+    if menu == "📦 Live Stok Opname":
+        st.title(f"Monitoring Live Stok Opname ({sel_lantai})")
+        
+        # Merge dengan sheet stat_lok (Join berdasarkan Lokasi)
+        so_map = pd.merge(floor_df, df_so, left_on='Lokasi', right_on='Lokasi', how='left')
+        
+        # Penanganan Status (Mapping warna sesuai data Anda)
+        so_map['STATUS'] = so_map['STATUS'].fillna('BELUM ADA DATA')
+        
+        # Map warna berdasarkan status di data Anda
+        color_so = {
+            'DONE': '#28a745',           # Hijau
+            'ON PROGRESS': '#ffc107',    # Kuning
+            'PENDING': '#dc3545',        # Merah
+            'BELUM ADA DATA': '#6c757d'  # Abu-abu
+        }
+        
+        fig = px.scatter(
+            so_map, x="X", y="Y_Visual",
+            color="STATUS", 
+            text="Lokasi",
+            hover_data={
+                "TARGET SKU": True, 
+                "P1": True, "P2": True, "P3": True,
+                "X": False, "Y_Visual": False
+            },
+            color_discrete_map=color_so
+        )
+        
+        fig.update_traces(marker=dict(size=22, line=dict(width=2, color='white')), textposition='top center')
 
-# Background Map Logic
-map_row = df_peta[df_peta['Lantai'] == sel_lantai]
-bg_map = f"https://lh3.googleusercontent.com/d/{map_row['URL'].values[0]}" if not map_row.empty else ""
+    # --- 5. MODULE: HEATMAP ---
+    elif menu == "🔥 Warehouse Heatmap":
+        st.title("Heatmap Dominasi Rak")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=floor_df['X'], y=floor_df['Y_Visual'],
+            mode='markers+text', text=floor_df['Lokasi'],
+            marker=dict(
+                size=floor_df['Total_Barang'].fillna(0) * 10,
+                sizemode='area', sizeref=0.8,
+                color=floor_df['Speed_Score'].fillna(0),
+                colorscale='RdBu_r', showscale=True,
+                line=dict(width=2, color='white')
+            )
+        ))
 
-if mode == "Heatmap Resume":
-    # Membuat Chart Heatmap
-    fig = go.Figure()
-    
-    # Tambahkan titik agregat
-    fig.add_trace(go.Scatter(
-        x=floor_df['X'], y=floor_df['Y_Visual'],
-        mode='markers+text',
-        text=floor_df['Lokasi'],
-        textposition="top center",
-        marker=dict(
-            size=floor_df['Total_Barang'].fillna(0) * 8, # Ukuran berdasarkan densitas
-            sizemode='area', sizeref=0.5,
-            color=floor_df['Speed_Score'].fillna(0), # Warna berdasarkan speed
-            colorscale='RdBu_r', # Red (Fast) to Blue (Slow)
-            showscale=True,
-            colorbar=dict(title="Speed Index", tickvals=[-1, 0, 1], ticktext=["Slow", "Mix", "Fast"]),
-            line=dict(width=2, color='white')
-        ),
-        hovertemplate=(
-            "<b>Rak: %{text}</b><br>" +
-            "Status: %{customdata[0]}<br>" +
-            "Total Item: %{customdata[1]}<br>" +
-            "Isi Rak:<br>%{customdata[2]}<extra></extra>"
-        ),
-        customdata=np.stack((floor_df['Status'], floor_df['Total_Barang'].fillna(0), floor_df['List_Barang'].fillna("-")), axis=-1)
-    ))
+    # --- 6. MODULE: PICKER ---
+    else:
+        st.title("Coordinate Picker")
+        fig = px.scatter(x=[0, 1000], y=[0, 1000], opacity=0)
 
-elif mode == "Detail Barang":
-    # Join ulang untuk mendapatkan titik per barang secara spesifik
-    detail_df = pd.merge(df_raw, df_rak[['Lokasi', 'X', 'Y_Visual', 'Lantai']], left_on='Kode_Lokasi', right_on='Lokasi')
-    detail_df = detail_df[detail_df['Lantai'] == sel_lantai]
-    
-    fig = px.scatter(detail_df, x="X", y="Y_Visual", color="Kategori", 
-                     hover_name="Nama_Barang", text="Kode_Lokasi",
-                     color_discrete_map={"FASTSLOW": "#ff4b4b", "SLOWDEAD": "#1c83e1"})
-    fig.update_traces(marker=dict(size=12, line=dict(width=1, color='white')))
+    # Global Layout
+    fig.update_layout(
+        images=[dict(source=bg_map, xref="x", yref="y", x=0, y=1000, sizex=1000, sizey=1000, sizing="stretch", opacity=0.7, layer="below")],
+        xaxis=dict(range=[0, 1000], visible=False),
+        yaxis=dict(range=[0, 1000], visible=False),
+        height=850, margin=dict(l=0, r=0, t=30, b=0),
+        clickmode='event+select'
+    )
 
-else: # Coordinate Picker
-    st.info("Klik pada peta untuk mendapatkan nilai X dan Y.")
-    # Canvas kosong untuk picker
-    fig = px.scatter(x=[0, 1000], y=[0, 1000], opacity=0)
+    selected = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
 
-# Final Layouting
-fig.update_layout(
-    images=[dict(source=bg_map, xref="x", yref="y", x=0, y=1000, sizex=1000, sizey=1000, sizing="stretch", opacity=0.7, layer="below")],
-    xaxis=dict(range=[0, 1000], visible=False),
-    yaxis=dict(range=[0, 1000], visible=False),
-    height=800, margin=dict(l=0, r=0, t=30, b=0),
-    clickmode='event+select'
-)
+    # Picker Logic
+    if menu == "🎯 Coordinate Picker" and selected and "selection" in selected:
+        pts = selected["selection"]["points"]
+        if pts:
+            st.success(f"📍 X: {int(pts[-1]['x'])}, Y: {1000 - int(pts[-1]['y'])}")
 
-# Output Chart
-selected = st.plotly_chart(fig, use_container_width=True, on_select="rerun")
-
-# Handle Picker Output
-if mode == "Coordinate Picker" and selected and "selection" in selected:
-    points = selected["selection"]["points"]
-    if points:
-        px_val, py_val = int(points[-1]['x']), 1000 - int(points[-1]['y'])
-        st.success(f"📍 Koordinat Terdeteksi: X={px_val}, Y={py_val}")
-        st.code(f"{px_val}\t{py_val}", language="text")
-        st.caption("Salin angka di atas ke Google Sheets Anda.")
-
-# --- 4. ANALYTICS CARD ---
-if mode == "Heatmap Resume":
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Rak", len(floor_df))
-    c2.metric("Rak Prioritas (Fast)", len(floor_df[floor_df['Speed_Score'] > 0]))
-    c3.metric("Rak Butuh Evaluasi (Slow)", len(floor_df[floor_df['Speed_Score'] < 0]))
+    # --- 7. SUMMARY ---
+    if menu == "📦 Live Stok Opname":
+        st.markdown("---")
+        done_count = len(so_map[so_map['STATUS'] == 'DONE'])
+        total_rak = len(so_map)
+        prog = int((done_count/total_rak)*100) if total_rak > 0 else 0
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Lokasi", total_rak)
+        c2.metric("Selesai (DONE)", done_count)
+        c3.write(f"**Total Progress: {prog}%**")
+        st.progress(prog/100)
