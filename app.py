@@ -5,132 +5,144 @@ import plotly.graph_objects as go
 import numpy as np
 from scipy.spatial.distance import cdist
 
-# --- 1. KONFIGURASI ---
+# --- 1. KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="Konoha Navigation System", layout="wide")
 
-# ID Google Sheets Anda
+# ID Spreadsheet Google Sheets
 SHEET_ID = '1Ov3nggLzpDQPkMyfoJtT8i4Goe1MLJ2t6AFRFspi_X8'
 
-@st.cache_data(ttl=600) # Data di-refresh setiap 10 menit
+# --- 2. FUNGSI LOAD DATA DENGAN CACHE ---
+# ttl=3600 bermaksud data disimpan dalam cache selama 1 jam untuk mempercepat loading
+@st.cache_data(ttl=3600)
 def load_gsheet_data(sheet_name):
-    # Mengubah ID menjadi format ekspor CSV
     url = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet={sheet_name}'
     return pd.read_csv(url)
 
-@st.cache_data
+@st.cache_data(ttl=3600)
 def load_and_process():
     try:
-        # Load masing-masing tab
+        # Load data dari tab Google Sheets
         df_data = load_gsheet_data('Data')
         df_master = load_gsheet_data('Master_Lokasi')
         df_peta = load_gsheet_data('Peta_Lantai')
         
-        # Konversi koordinat ke angka
+        # Pastikan kolom koordinat bersih
         df_master['X'] = pd.to_numeric(df_master['X'], errors='coerce')
         df_master['Y'] = pd.to_numeric(df_master['Y'], errors='coerce')
         df_master = df_master.dropna(subset=['X', 'Y'])
         
-        # Gabungkan Data Barang dengan Koordinat
+        # Merge Data Barang dengan Koordinat
         merged = pd.merge(df_data, df_master, left_on='Kode_Lokasi', right_on='Lokasi', how='inner')
+        
+        # --- LOGIK TERBALIK (Atas jadi Bawah) ---
+        # Kita gunakan 1000 sebagai had maksimum paksi Y (sesuaikan jika skala anda berbeza)
+        MAX_Y = 1000
+        merged['Y_Visual'] = MAX_Y - merged['Y']
+        
+        # Pembersihan nilai negatif untuk saiz marker
+        merged['QtyStok_Visual'] = merged['QtyStok'].clip(lower=0)
+        
         return merged, df_peta
     except Exception as e:
-        st.error(f"Error Koneksi Data: {e}")
+        st.error(f"Gagal memuat data: {e}")
         return None, None
 
-# Load Data
+# Load data menggunakan sistem cache
 df, df_peta = load_and_process()
 
 if df is not None:
-    # --- 2. SIDEBAR ---
-    st.sidebar.title("🥷 Konoha System")
-    menu = st.sidebar.radio("Navigasi", ["Peta Interaktif", "Optimasi Jalur", "Analisis Heatmap"])
+    # --- 3. SIDEBAR ---
+    st.sidebar.title("🥷 Konoha Ops System")
+    
+    # Butang manual untuk refresh cache jika ada perubahan di Google Sheets
+    if st.sidebar.button("🔄 Refresh Data Baru"):
+        st.cache_data.clear()
+        st.rerun()
+
+    menu = st.sidebar.radio("Menu", ["Peta Interaktif", "Optimasi Rute", "Analisis Heatmap"])
     
     st.sidebar.divider()
-    sel_lantai = st.sidebar.selectbox("Lantai", df_peta['Lantai'].unique())
-    
-    # Filter data berdasarkan lantai
-    floor_df = df[df['Lantai'] == sel_lantai]
+    sel_lantai = st.sidebar.selectbox("Pilih Lantai", df_peta['Lantai'].unique())
+    floor_df = df[df['Lantai'] == sel_lantai].copy()
 
-    # --- 3. MENU: PETA INTERAKTIF ---
+    # --- 4. MENU: PETA INTERAKTIF ---
     if menu == "Peta Interaktif":
-        st.header(f"📍 Posisi Barang - {sel_lantai}")
+        st.header(f"📍 Digital Map (Y-Inverted): {sel_lantai}")
         
-        # Ambil URL Peta
-        peta_row = df_peta[df_peta['Lantai'] == sel_lantai]
-        map_id = peta_row['URL'].values[0]
-        # Mengubah ID Google Drive menjadi Direct Link
-        direct_map_url = f"https://lh3.googleusercontent.com/d/{map_id}"
+        map_row = df_peta[df_peta['Lantai'] == sel_lantai]
+        if not map_row.empty:
+            map_id = map_row['URL'].values[0]
+            direct_map_url = f"https://lh3.googleusercontent.com/d/{map_id}"
 
-        fig = px.scatter(
-            floor_df, x="X", y="Y",
-            hover_name="Nama_Barang",
-            color="Kategori",
-            size="QtyStok",
-            hover_data={"X":False, "Y":False, "QtyStok":True, "Harga":True},
-            template="plotly_white"
-        )
+            fig = px.scatter(
+                floor_df, x="X", y="Y_Visual", # Menggunakan Y_Visual yang sudah terbalik
+                hover_name="Nama_Barang",
+                color="Kategori",
+                size="QtyStok_Visual",
+                hover_data={
+                    "X": True, 
+                    "Y_Visual": False, 
+                    "Y": True, # Menunjukkan Y asli di hover
+                    "QtyStok": True,
+                    "Harga": ":,.0f"
+                },
+                template="plotly_white"
+            )
 
-        fig.update_layout(
-            images=[dict(
-                source=direct_map_url,
-                xref="x", yref="y", x=0, y=1000,
-                sizex=1000, sizey=1000,
-                sizing="stretch", opacity=0.7, layer="below"
-            )],
-            xaxis=dict(range=[0, 1000], visible=False),
-            yaxis=dict(range=[0, 1000], visible=False),
-            height=700
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                images=[dict(
+                    source=direct_map_url,
+                    xref="x", yref="y", x=0, y=1000,
+                    sizex=1000, sizey=1000,
+                    sizing="stretch", opacity=0.6, layer="below"
+                )],
+                xaxis={"range": [0, 1000], "visible": False},
+                yaxis={"range": [0, 1000], "visible": False},
+                height=750
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-    # --- 4. MENU: OPTIMASI JALUR ---
-    elif menu == "Optimasi Jalur":
-        st.header("🚚 Picking Path Optimization")
-        st.info("Pilih barang yang akan diambil, sistem akan menentukan jalur tercepat.")
+    # --- 5. MENU: OPTIMASI RUTE ---
+    elif menu == "Optimasi Rute":
+        st.header("🚚 Picking Route Optimizer")
+        items_to_pick = st.multiselect("Pilih Barang:", floor_df['Nama_Barang'].unique())
         
-        selected_items = st.multiselect("Daftar Belanja/Picking", floor_df['Nama_Barang'].unique())
-        
-        if len(selected_items) > 1:
-            pick_df = floor_df[floor_df['Nama_Barang'].isin(selected_items)].copy()
+        if len(items_to_pick) > 1:
+            pick_df = floor_df[floor_df['Nama_Barang'].isin(items_to_pick)].copy()
+            coords = pick_df[['X', 'Y_Visual']].values
             
-            # Algoritma Jalur Terdekat (Greedy)
-            coords = pick_df[['X', 'Y']].values
+            # Algoritma Greedy TSP
             current_idx = 0
-            route = [0]
-            unvisited = list(range(1, len(coords)))
+            route_indices = [0]
+            remaining = list(range(1, len(coords)))
             
-            while unvisited:
-                dists = cdist([coords[current_idx]], coords[unvisited])
-                closest_idx = unvisited[np.argmin(dists)]
-                route.append(closest_idx)
-                unvisited.remove(closest_idx)
-                current_idx = closest_idx
+            while remaining:
+                last_coord = [coords[current_idx]]
+                distances = cdist(last_coord, coords[remaining])
+                nearest_in_rem = np.argmin(distances)
+                current_idx = remaining.pop(nearest_in_rem)
+                route_indices.append(current_idx)
             
-            final_route = pick_df.iloc[route]
+            ordered_df = pick_df.iloc[route_indices]
             
-            # Gambar Jalur
             fig_route = go.Figure()
             fig_route.add_trace(go.Scatter(
-                x=final_route['X'], y=final_route['Y'],
+                x=ordered_df['X'], y=ordered_df['Y_Visual'],
                 mode='lines+markers+text',
-                text=final_route['Nama_Barang'],
+                text=list(range(1, len(ordered_df)+1)),
+                textposition="top center",
                 line=dict(color='red', width=3),
-                marker=dict(size=15, color='black')
+                marker=dict(size=12, color='black')
             ))
-            fig_route.update_layout(xaxis=dict(range=[0,1000]), yaxis=dict(range=[0,1000]), height=600)
+            fig_route.update_layout(xaxis={"range":[0,1000]}, yaxis={"range":[0,1000]}, height=600)
             st.plotly_chart(fig_route)
-            st.dataframe(final_route[['Nama_Barang', 'Kode_Lokasi']])
+            st.table(ordered_df[['Nama_Barang', 'Kode_Lokasi']])
 
-    # --- 5. MENU: ANALISIS HEATMAP ---
+    # --- 6. MENU: HEATMAP ---
     elif menu == "Analisis Heatmap":
-        st.header("🔥 Product Density Heatmap")
+        st.header("🔥 Density Heatmap")
         fig_h = px.density_heatmap(
-            floor_df, x="X", y="Y", z="QtyStok",
-            nbinsx=20, nbinsy=20, 
-            color_continuous_scale="Hot",
-            title="Kepadatan Stok per Koordinat"
+            floor_df, x="X", y="Y_Visual", z="QtyStok_Visual",
+            nbinsx=25, nbinsy=25, color_continuous_scale="Viridis"
         )
         st.plotly_chart(fig_h, use_container_width=True)
-
-else:
-    st.warning("Data tidak tersedia. Cek konfigurasi Google Sheets Anda.")
