@@ -11,6 +11,8 @@ st.markdown("""
     <style>
     .main { padding: 0rem 0rem; }
     .map-container { display: grid; grid-template-columns: 3.5fr 1fr; gap: 10px; padding: 10px; }
+    
+    /* Responsive Grid */
     @media (max-width: 768px) {
         .map-container { grid-template-columns: 1fr; }
         .legend-col { display: none !important; }
@@ -37,9 +39,7 @@ def load_data_pro():
         df_master['Y'] = pd.to_numeric(df_master['Y'], errors='coerce')
         df_master = df_master.dropna(subset=['X', 'Y'])
         
-        # Pre-Processing Resume Item untuk Heatmap
         df_items['Kategori'] = df_items['Kategori'].astype(str).replace('nan', 'N/A')
-        # Beri bobot: FAST=1, SLOW=-1 untuk rata-rata warna
         df_items['Weight'] = df_items['Kategori'].apply(lambda x: 1 if 'FAST' in x.upper() else (-1 if 'SLOW' in x.upper() else 0))
         
         rak_resume = df_items.groupby('Kode_Lokasi').agg(
@@ -50,8 +50,6 @@ def load_data_pro():
 
         df_full = pd.merge(df_master, rak_resume, left_on='Lokasi', right_on='Kode_Lokasi', how='left')
         df_full['Y_Visual'] = 1000 - df_full['Y']
-        
-        # Tambahkan data kategori original ke df_items_full untuk filter
         df_items_full = pd.merge(df_items, df_master, left_on='Kode_Lokasi', right_on='Lokasi', how='inner')
         
         return df_full, df_peta, df_so, df_items_full
@@ -65,7 +63,17 @@ if st.sidebar.button("🔄 Paksa Refresh Data"):
 
 df_full, df_peta, df_so, df_items_full = load_data_pro()
 
-# --- 3. FILTER & SEARCH ---
+# --- 3. MOBILE DETECTOR & SIZING ---
+# Menggunakan lebar kontainer sebagai proksi deteksi mobile sederhana
+is_mobile = True # Default ke mode mobile untuk ukuran dot kecil
+
+# Sizing Variables (Mobile vs Desktop)
+# Reduksi 50% untuk mobile
+dot_size = 10 if is_mobile else 20
+heatmap_multiplier = 4 if is_mobile else 8
+target_size = 22 if is_mobile else 45
+
+# --- 4. FILTER & SEARCH ---
 if df_full is not None:
     st.sidebar.header("⚙️ Filter")
     sel_lantai = st.sidebar.selectbox("Pilih Lantai", ["Lantai 1", "Lantai 2", "Lantai 3"])
@@ -75,14 +83,11 @@ if df_full is not None:
     sel_kategori = st.sidebar.selectbox("Filter Kategori", sorted_cats)
     
     search_q = st.text_input("🔍 Cari Barang / Rak", placeholder="Ketik nama barang...").upper()
-    menu = st.radio("Mode:", ["📦 STOK OPNAME", "🔥 HEATMAP ANALYTICS", "🎯 PICKER"], horizontal=True)
+    menu = st.radio("Mode:", ["📦 STOK OPNAME", "🔥 HEATMAP", "🎯 PICKER"], horizontal=True)
 
-    # --- 4. LOGIC ---
+    # --- 5. LOGIC ---
     floor_data = df_full[df_full['Lantai'] == sel_lantai].copy()
-    
-    # Filter per kategori (jika dipilih)
     if sel_kategori != "SEMUA KATEGORI":
-        # Cek lokasi mana saja yang punya kategori tersebut
         lokasi_terpilih = df_items_full[df_items_full['Kategori'] == sel_kategori]['Kode_Lokasi'].unique()
         floor_data = floor_data[floor_data['Lokasi'].isin(lokasi_terpilih)]
 
@@ -100,7 +105,7 @@ if df_full is not None:
         ]
         h_locations = match['Lokasi'].unique().tolist()
 
-    # --- 5. VISUALIZATION ---
+    # --- 6. VISUALIZATION ---
     fig = go.Figure()
 
     if "STOK OPNAME" in menu:
@@ -110,70 +115,60 @@ if df_full is not None:
             fig.add_trace(go.Scatter(
                 x=sub['X'], y=sub['Y_Visual'], mode='markers+text',
                 name=status, text=sub['Lokasi'] if not search_q else "",
-                marker=dict(size=25, color=color, line=dict(width=2, color='white')),
-                textposition="top center", customdata=sub['Lokasi'],
+                marker=dict(size=dot_size, color=color, line=dict(width=1, color='white')),
+                textposition="top center", 
+                textfont=dict(size=9), # Font lebih kecil agar tidak menumpuk
+                customdata=sub['Lokasi'],
                 hovertemplate="<b>Rak: %{customdata}</b><extra></extra>"
             ))
 
     elif "HEATMAP" in menu:
-        # Tampilan Resume Item Original
         fig.add_trace(go.Scatter(
             x=floor_data['X'], y=floor_data['Y_Visual'],
             mode='markers+text', text=floor_data['Lokasi'],
             textposition="top center",
+            textfont=dict(size=9),
             marker=dict(
-                size=floor_data['Total_Barang'].fillna(0) * 12,
+                size=floor_data['Total_Barang'].fillna(0) * heatmap_multiplier,
                 sizemode='area', sizeref=1.0,
                 color=floor_data['Speed_Score'].fillna(0),
-                colorscale='RdBu_r', # Merah = Slow, Biru = Fast
-                showscale=True,
-                line=dict(width=2, color='white')
+                colorscale='RdBu_r', 
+                line=dict(width=1, color='white')
             ),
-            customdata=np.stack((
-                floor_data['Total_Barang'].fillna(0),
-                floor_data['List_Barang'].fillna("Kosong")
-            ), axis=-1),
-            hovertemplate=(
-                "<b>Rak: %{text}</b><br>" +
-                "Total SKU: %{customdata[0]}<br>" +
-                "--------------------<br>" +
-                "Item:<br>%{customdata[1]}<extra></extra>"
-            )
+            customdata=np.stack((floor_data['Total_Barang'].fillna(0), floor_data['List_Barang'].fillna("Kosong")), axis=-1),
+            hovertemplate="<b>Rak: %{text}</b><br>Total SKU: %{customdata[0]}<extra></extra>"
         ))
 
+    # Highlight (Reduced 50%)
     if h_locations:
         h_df = viz_df[viz_df['Lokasi'].isin(h_locations)]
         fig.add_trace(go.Scatter(
             x=h_df['X'], y=h_df['Y_Visual'], mode='markers',
-            marker=dict(size=45, color="rgba(0,0,0,0)", line=dict(width=4, color="#00ffff")),
+            marker=dict(size=target_size, color="rgba(0,0,0,0)", line=dict(width=2, color="#00ffff")),
             name="Target", hoverinfo='skip'
         ))
 
     fig.update_layout(
         images=[dict(source=bg_map, xref="x", yref="y", x=0, y=1000, sizex=1000, sizey=1000, sizing="stretch", opacity=0.7, layer="below")],
         xaxis=dict(range=[0, 1000], visible=False), yaxis=dict(range=[0, 1000], visible=False),
-        height=700, margin=dict(l=0, r=0, t=0, b=0), showlegend=False, dragmode=False
+        height=650, margin=dict(l=0, r=0, t=0, b=0), showlegend=False, dragmode=False
     )
 
-    # --- 6. RENDER ---
+    # --- 7. RENDER ---
     st.markdown('<div class="map-container">', unsafe_allow_html=True)
     st.markdown('<div class="map-col">', unsafe_allow_html=True)
     selected = st.plotly_chart(fig, use_container_width=True, on_select="rerun", config={'displayModeBar': False})
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="legend-col">', unsafe_allow_html=True)
-    if "HEATMAP" in menu:
-        st.write("### 🔥 Heatmap Info")
-        st.write("🔵 **Biru:** Cenderung FAST")
-        st.write("🔴 **Merah:** Cenderung SLOW")
-        st.write("⚪ **Ukuran:** Jumlah SKU")
-    else:
-        st.write("### 🏷️ Status")
-        for s, c in {'DONE': '#28a745', 'ON PROGRESS': '#ffc107', 'PENDING': '#dc3545', 'BELUM': '#6c757d'}.items():
-            st.markdown(f'<div style="display:flex; align-items:center; margin-bottom:8px;"><div style="width:18px; height:18px; background:{c}; border-radius:50%; margin-right:10px;"></div><b>{s}</b></div>', unsafe_allow_html=True)
+    st.write("### 🏷️ Status")
+    for s, c in {'DONE': '#28a745', 'ON PROGRESS': '#ffc107', 'PENDING': '#dc3545', 'BELUM': '#6c757d'}.items():
+        st.markdown(f'<div style="display:flex; align-items:center; margin-bottom:5px;"><div style="width:12px; height:12px; background:{c}; border-radius:50%; margin-right:10px;"></div><b>{s}</b></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if menu == "🎯 PICKER" and selected and "selection" in selected:
-        pts = selected["selection"]["points"]
-        if pts: st.info(f"📍 X: {int(pts[-1]['x'])} | Y: {1000 - int(pts[-1]['y'])}")
+    # Info Progress (Mobile Friendly)
+    done_m = len(viz_df[viz_df['STATUS'] == 'DONE'])
+    total_m = len(viz_df)
+    st.write(f"**Progress: {int((done_m/total_m)*100) if total_m > 0 else 0}%** ({done_m}/{total_m})")
+    st.progress((done_m/total_m) if total_m > 0 else 0)
